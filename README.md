@@ -204,7 +204,7 @@ snspub import 발행.json             # 등록
 ## 개발
 
 ```bash
-npm test      # 62개 테스트 (엔진·어댑터·화면 서버). 외부 API 는 가짜 fetch 로 검증
+npm test      # 엔진·어댑터·화면 서버 테스트 (외부 API 는 가짜 fetch 로 검증)
 ```
 
 ```

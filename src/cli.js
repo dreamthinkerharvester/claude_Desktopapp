@@ -131,6 +131,12 @@ function resolveMedia(media, baseDir) {
 
 const LAUNCHD_LABEL = 'com.snspub.agent';
 
+// Homebrew 의 node 는 버전 폴더(/Cellar/...)에 있어 업그레이드하면 경로가 사라집니다 → 고정 경로를 씁니다
+function stableNodePath() {
+  if (!process.execPath.includes('/Cellar/')) return process.execPath;
+  return ['/opt/homebrew/bin/node', '/usr/local/bin/node'].find((p) => existsSync(p)) ?? process.execPath;
+}
+
 function launchdPlist({ node, script, configFile, logDir }) {
   const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -199,9 +205,9 @@ async function run(cmd, args, flags) {
     const logDir = join(config.dataDir, 'logs');
     mkdirSync(logDir, { recursive: true });
     mkdirSync(dirname(plistPath), { recursive: true });
-    writeFileSync(plistPath, launchdPlist({ node: process.execPath, script: join(APP_ROOT, 'bin', 'snspub.js'), configFile: config.file, logDir }));
+    writeFileSync(plistPath, launchdPlist({ node: stableNodePath(), script: join(APP_ROOT, 'bin', 'snspub.js'), configFile: config.file, logDir }));
     execFileSync('launchctl', ['bootstrap', domain, plistPath]);
-    out(`자동 실행을 등록했습니다: ${plistPath}`, `로그: ${logDir}`, `화면: http://127.0.0.1:${config.port}`, '', '외장 디스크의 파일을 읽으려면 [시스템 설정 → 개인정보 보호 및 보안 → 전체 디스크 접근 권한]에', `${process.execPath} 을(를) 추가해야 할 수 있습니다.`);
+    out(`자동 실행을 등록했습니다: ${plistPath}`, `로그: ${logDir}`, `화면: http://127.0.0.1:${config.port}`, '', '외장 디스크의 파일을 읽으려면 [시스템 설정 → 개인정보 보호 및 보안 → 전체 디스크 접근 권한]에', `${process.execPath} 을(를) 추가해야 할 수 있습니다 (node 를 업그레이드하면 새 경로로 다시 추가).`);
     return 0;
   }
 
@@ -256,8 +262,19 @@ async function run(cmd, args, flags) {
 
       case 'check': {
         const channels = args.length ? args : enabledChannels(config);
-        if (!channels.length) out('켜진 채널이 없습니다. config.jsonc 의 channels 를 확인해 주세요.');
         let bad = 0;
+        if (!args.length) {
+          const folders = [
+            [!!config.inboxDir && existsSync(config.inboxDir), `수신함 폴더    ${config.inboxDir || '(config.jsonc 의 inboxDir 가 비어 있음)'}`],
+            [!config.archiveDir || existsSync(config.archiveDir) || existsSync(dirname(config.archiveDir)), `보관 폴더      ${config.archiveDir || '(설정 안 함 — 원본을 옮기지 않음)'}`],
+          ];
+          for (const [ok, text] of folders) {
+            if (!ok) bad += 1;
+            out(`${ok ? '✓' : '✗'} ${text}`);
+          }
+          out('');
+        }
+        if (!channels.length) out('켜진 채널이 없습니다. config.jsonc 의 channels 를 확인해 주세요.');
         for (const ch of channels) {
           const r = await engine.checkChannel(ch);
           if (!r.ok) bad += 1;

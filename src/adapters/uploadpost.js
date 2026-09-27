@@ -231,10 +231,18 @@ export default {
     const profiles = res.json?.profiles ?? res.json?.users ?? [];
     const profile = profiles.find((p) => p.username === ctx.route.user);
     if (profiles.length && !profile) return { ok: false, message: `Upload-Post 에 "${ctx.route.user}" 프로필이 없습니다 (있는 프로필: ${profiles.map((p) => p.username).join(', ')})` };
-    const account = profile?.social_accounts?.[PLATFORM[channel]];
-    if (profile?.social_accounts && !account) return { ok: false, message: `Upload-Post 프로필에 ${channel} 계정이 연결되어 있지 않습니다` };
-    const name = typeof account === 'object' ? account.display_name ?? account.username ?? account.handle : undefined;
-    return { ok: true, account: name ? `${name} (Upload-Post)` : `Upload-Post 프로필 ${ctx.route.user}` };
+    const accounts = profile?.social_accounts;
+    const keys = channel === 'x' ? ['x', 'twitter'] : [PLATFORM[channel]];
+    const key = accounts ? keys.find((k) => k in accounts) : undefined;
+    const account = key ? accounts[key] : undefined;
+    // 키가 있는데 비어 있으면 미연결, 키 자체가 없으면 (형식을 몰라) 확인 불가로 둡니다
+    if (key && !account) return { ok: false, message: `Upload-Post 프로필에 ${channel} 계정이 연결되어 있지 않습니다` };
+    const name = account && typeof account === 'object' ? account.display_name ?? account.username ?? account.handle : undefined;
+    return {
+      ok: true,
+      account: name ? `${name} (Upload-Post)` : `Upload-Post 프로필 ${ctx.route.user}`,
+      message: accounts && !key ? '채널 연결 여부는 Upload-Post 화면에서 확인해 주세요' : undefined,
+    };
   },
   async publish(job, ctx) {
     return send(job, ctx);

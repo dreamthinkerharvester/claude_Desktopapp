@@ -172,9 +172,12 @@ test('플랫폼이 실패를 알리면 실패로 두고 이유를 보여 준다'
 });
 
 test('연결 확인: 프로필과 채널 계정 연결 여부', async () => {
-  const env = setup(['instagram', 'tiktok']);
+  const env = setup(['instagram', 'tiktok', 'x', 'threads']);
   const fetch = mockFetch([
-    { match: 'uploadposts/users', reply: { json: { success: true, profiles: [{ username: 'harvester', social_accounts: { instagram: { display_name: 'lawgoodjib' }, tiktok: '' } }] } } },
+    {
+      match: 'uploadposts/users',
+      reply: { json: { success: true, profiles: [{ username: 'harvester', social_accounts: { instagram: { display_name: 'lawgoodjib' }, tiktok: '', twitter: { username: 'lawgoodzip' } } }] } },
+    },
   ]);
   const engine = env.engine({ uploadpost }, { fetchImpl: fetch });
   try {
@@ -184,6 +187,12 @@ test('연결 확인: 프로필과 채널 계정 연결 여부', async () => {
     const tt = await engine.checkChannel('tiktok');
     assert.equal(tt.ok, false);
     assert.match(tt.message, /연결되어 있지 않습니다/);
+    const x = await engine.checkChannel('x');
+    assert.equal(x.ok, true);
+    assert.match(x.account, /lawgoodzip/);
+    const threads = await engine.checkChannel('threads');
+    assert.equal(threads.ok, true, '형식을 모르는 경우는 막지 않음');
+    assert.match(threads.message, /Upload-Post 화면에서 확인/);
   } finally {
     env.cleanup();
   }
