@@ -189,6 +189,34 @@ async function fromResults(job, ctx, results, requestId) {
   return { status: 'published', id, warning: '게시는 됐지만 주소를 아직 받지 못했습니다 (채널에서 확인)' };
 }
 
+// ---------- 프로필·계정 연결 조회 (연결 확인과 설정 마법사에서 함께 씀) ----------
+
+export const UPLOADPOST_CHANNELS = Object.keys(PLATFORM);
+
+export async function listProfiles(route, request) {
+  const res = await request(`${BASE}/uploadposts/users`, { headers: headers(route), classify, label: 'Upload-Post 프로필 조회' });
+  return res.json?.profiles ?? res.json?.users ?? [];
+}
+
+// 프로필에서 채널 계정 연결 상태: connected(연결됨) / missing(연결 안 됨) / unknown(형식을 몰라 판단 불가)
+export function accountState(profile, channel) {
+  const accounts = profile?.social_accounts;
+  if (!accounts || typeof accounts !== 'object') return { state: 'unknown' };
+  const keys = channel === 'x' ? ['x', 'twitter'] : [PLATFORM[channel]];
+  const key = keys.find((k) => k in accounts);
+  if (!key) return { state: 'unknown' };
+  const account = accounts[key];
+  if (!account) return { state: 'missing' };
+  const name = typeof account === 'object' ? account.display_name ?? account.username ?? account.handle : undefined;
+  return { state: 'connected', name };
+}
+
+export async function listFacebookPages(route, request, profile) {
+  const res = await request(`${BASE}/uploadposts/facebook/pages?profile=${encodeURIComponent(profile)}`, { headers: headers(route), classify, label: 'Facebook 페이지 조회' });
+  const pages = res.json?.pages ?? res.json?.data ?? [];
+  return pages.map((p) => ({ id: String(p.id ?? p.page_id ?? ''), name: p.name ?? p.page_name ?? '' })).filter((p) => p.id);
+}
+
 async function poll(job, ctx) {
   const { requestId } = job.remote;
   const res = await ctx.request(`${BASE}/uploadposts/status?request_id=${encodeURIComponent(requestId)}`, {
@@ -240,29 +268,24 @@ export default {
   },
   async check(channel, ctx) {
     requireConfig(ctx.route);
-    let res;
+    let profiles;
     try {
-      res = await ctx.request(`${BASE}/uploadposts/users`, { headers: headers(ctx.route), classify, label: 'Upload-Post 연결 확인' });
+      profiles = await listProfiles(ctx.route, ctx.request);
     } catch (err) {
       if (err.kind !== 'invalid') throw err;
       // 프로필 목록을 못 읽으면 기록 조회로 API 키만 확인합니다
       await ctx.request(`${BASE}/uploadposts/history?page=1&limit=20`, { headers: headers(ctx.route), classify, label: 'Upload-Post 연결 확인' });
       return { ok: true, account: `Upload-Post 프로필 ${ctx.route.user}`, message: 'API 키 정상 (채널별 계정 연결은 Upload-Post 화면에서 확인해 주세요)' };
     }
-    const profiles = res.json?.profiles ?? res.json?.users ?? [];
     const profile = profiles.find((p) => p.username === ctx.route.user);
     if (profiles.length && !profile) return { ok: false, message: `Upload-Post 에 "${ctx.route.user}" 프로필이 없습니다 (있는 프로필: ${profiles.map((p) => p.username).join(', ')})` };
-    const accounts = profile?.social_accounts;
-    const keys = channel === 'x' ? ['x', 'twitter'] : [PLATFORM[channel]];
-    const key = accounts ? keys.find((k) => k in accounts) : undefined;
-    const account = key ? accounts[key] : undefined;
+    const { state, name } = accountState(profile, channel);
     // 키가 있는데 비어 있으면 미연결, 키 자체가 없으면 (형식을 몰라) 확인 불가로 둡니다
-    if (key && !account) return { ok: false, message: `Upload-Post 프로필에 ${channel} 계정이 연결되어 있지 않습니다` };
-    const name = account && typeof account === 'object' ? account.display_name ?? account.username ?? account.handle : undefined;
+    if (state === 'missing') return { ok: false, message: `Upload-Post 프로필에 ${channel} 계정이 연결되어 있지 않습니다` };
     return {
       ok: true,
       account: name ? `${name} (Upload-Post)` : `Upload-Post 프로필 ${ctx.route.user}`,
-      message: accounts && !key ? '채널 연결 여부는 Upload-Post 화면에서 확인해 주세요' : undefined,
+      message: profile?.social_accounts && state === 'unknown' ? '채널 연결 여부는 Upload-Post 화면에서 확인해 주세요' : undefined,
     };
   },
   async publish(job, ctx) {

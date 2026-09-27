@@ -75,27 +75,38 @@ Buffer·Upload-Post·Ayrshare·Postiz·Meta 비즈니스 스위트를 분석해�
 
 ## 설치 (Mac mini)
 
-1. **Node.js 22.13 이상** — 터미널에서 `node -v` 로 확인. 없으면 `brew install node`
-2. 내려받기 (외장 디스크보다 **내장 디스크**에 두는 것을 권장)
-   ```bash
-   git clone https://github.com/dreamthinkerharvester/claude_Desktopapp.git ~/sns-publisher
-   cd ~/sns-publisher
-   node bin/snspub.js init          # config.jsonc 생성
-   ```
-3. `config.jsonc` 를 열어 폴더 경로와 채널별 게시 경로·키를 채웁니다 → [채널 연결 가이드](docs/채널-연결-가이드.md)
-4. 확인과 실행
-   ```bash
-   node bin/snspub.js check         # 채널 연결 확인 (게시하지 않음)
-   node bin/snspub.js start         # http://127.0.0.1:4310
-   ```
-5. 맥이 켜질 때 자동 실행 (상시 운영)
-   ```bash
-   node bin/snspub.js install-launchd
-   ```
-   - 외장 디스크(`/Volumes/...`)의 파일을 읽으려면 **시스템 설정 → 개인정보 보호 및 보안 → 전체 디스크 접근 권한**에 node 를 추가해야 할 수 있습니다 (설치 명령이 경로를 알려 줍니다).
-   - 예약 시각에 Mac mini 가 켜져 있어야 올라갑니다. **시스템 설정 → 에너지 → "디스플레이가 꺼져 있을 때 자동으로 잠자기 방지"** 를 켜 두세요.
+터미널(응용 프로그램 → 유틸리티 → 터미널)에 아래 한 줄을 붙여 넣고 Enter:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dreamthinkerharvester/claude_Desktopapp/HEAD/install.sh | bash
+```
+
+설치 명령이 하는 일
+
+1. 개발 도구(git)와 Node.js 22.13 이상 확인 (Node.js 가 없으면 Homebrew 로 설치)
+2. `~/sns-publisher` 에 내려받기 (이미 있으면 최신으로 업데이트)
+3. **설정 마법사** — 질문 4개
+   1. Upload-Post API 키 (바로 확인하고, 연결된 SNS 계정을 보여 줌)
+   2. 프로필 (여러 개일 때만)
+   3. 요금제: 무료(월 10회, TikTok 제외) / 유료
+   4. 수신함·보관 폴더 (Enter 면 `/Volumes/MacData/1. 최종콘텐츠/…` 기본값)
+4. 채널 연결 확인 → 맥이 켜질 때 자동 실행 등록 → 브라우저에서 `http://127.0.0.1:4310`
+
+같은 명령을 다시 실행하면 프로그램이 최신으로 바뀌고 설정 마법사가 다시 열립니다 (기존 값은 Enter 로 유지, 실행 중인 발행기는 새 설정으로 다시 켜짐).
+
+- 외장 디스크(`/Volumes/...`)의 파일을 읽으려면 **시스템 설정 → 개인정보 보호 및 보안 → 전체 디스크 접근 권한**에 node 를 추가해야 할 수 있습니다 (설치 끝에 경로를 알려 줍니다).
+- 예약 시각에 Mac mini 가 켜져 있어야 올라갑니다. **시스템 설정 → 에너지 → "디스플레이가 꺼져 있을 때 자동으로 잠자기 방지"** 를 켜 두세요.
+- 직접 설치하려면: `git clone https://github.com/dreamthinkerharvester/claude_Desktopapp.git ~/sns-publisher && cd ~/sns-publisher && node bin/snspub.js setup`
 
 > `npm link` 를 한 번 해 두면 `node bin/snspub.js` 대신 `snspub` 으로 쓸 수 있습니다.
+
+### Upload-Post 무료로 시험 → 유료 전환
+
+1. <https://app.upload-post.com> 에서 **프로필**을 하나 만들고 YouTube·Instagram·Facebook(페이지)·Threads·X 를 연결합니다 (TikTok 은 유료 플랜에서).
+2. **API Keys** 에서 키를 만든 뒤 위 설치 명령을 실행해 마법사에 붙여 넣고, 요금제는 `1) 무료`.
+   - 무료에서는 TikTok 이 업로드 도우미(반자동)로 설정됩니다.
+3. 무료 10회는 **채널 1곳에 1번 올릴 때마다 1회**입니다 (채널마다 요청을 따로 보내기 때문). 예) 영상 1개 × 5개 채널 = 5회 → 처음에는 영상 1개로 시험하세요.
+4. 결과가 괜찮아 유료로 바꿨다면: 프로필에 TikTok 을 연결 → **설치 명령을 다시 실행** → 요금제 `2) 유료` → TikTok 도 자동 게시로 바뀝니다.
 
 ---
 

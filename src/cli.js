@@ -1,19 +1,23 @@
 import { execFileSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
+import { createInterface } from 'node:readline/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { openApp, STATUS_LABELS } from './app.js';
 import { APP_ROOT, CHANNELS, defaultConfigPath, enabledChannels, sortJobs } from './config.js';
 import { registerMetaToken } from './oauth/meta.js';
 import { createPost, planPost } from './planner.js';
+import { runSetup } from './setup.js';
 import { startServer } from './server.js';
 import { acquireLock, openUrl } from './system.js';
 import { parseJsonc } from './util/jsonc.js';
+import { pad } from './util/text.js';
 import { formatLocal } from './util/time.js';
 
 const HELP = `SNS 발행기 (snspub) — 나만 쓰는 최소 기능 예약 발행
 
-  snspub init                         설정 파일(config.jsonc) 만들기
+  snspub setup                        설정 마법사 (Upload-Post 키·요금제·폴더 → 자동 실행까지)
+  snspub init                         빈 설정 파일(config.jsonc)만 만들기
   snspub start                        예약 실행기 + 웹 화면 켜기 → http://127.0.0.1:4310
   snspub check [채널...]              채널 연결 확인 (게시하지 않음)
 
@@ -73,11 +77,6 @@ export function parseArgs(argv) {
 }
 
 const out = (...lines) => console.log(lines.join('\n'));
-const pad = (text, n) => {
-  const s = String(text ?? '');
-  const width = [...s].reduce((w, ch) => w + (/[ᄀ-ᇿ　-鿿가-힣＀-￯]/.test(ch) ? 2 : 1), 0);
-  return s + ' '.repeat(Math.max(1, n - width));
-};
 
 function parseGap(text) {
   const m = /^(\d+)(?:\s*-\s*(\d+))?$/.exec(String(text).trim());
@@ -168,6 +167,111 @@ function launchdPlist({ node, script, configFile, logDir }) {
 `;
 }
 
+const plistPath = () => join(homedir(), 'Library', 'LaunchAgents', `${LAUNCHD_LABEL}.plist`);
+
+function uninstallLaunchd() {
+  if (process.platform !== 'darwin') throw new Error('launchd 자동 실행은 macOS 에서만 쓸 수 있습니다');
+  try {
+    execFileSync('launchctl', ['bootout', `gui/${process.getuid()}`, plistPath()], { stdio: 'ignore' });
+  } catch {
+    // 등록돼 있지 않았으면 무시
+  }
+  rmSync(plistPath(), { force: true });
+}
+
+// 맥 로그인 때 자동 실행 등록 (이미 있으면 새 설정으로 다시 켬)
+function installLaunchd(configPath) {
+  if (process.platform !== 'darwin') throw new Error('launchd 자동 실행은 macOS 에서만 쓸 수 있습니다');
+  const { config, store } = openApp({ configPath });
+  store.close();
+  uninstallLaunchd();
+  const logDir = join(config.dataDir, 'logs');
+  mkdirSync(logDir, { recursive: true });
+  mkdirSync(dirname(plistPath()), { recursive: true });
+  writeFileSync(plistPath(), launchdPlist({ node: stableNodePath(), script: join(APP_ROOT, 'bin', 'snspub.js'), configFile: config.file, logDir }));
+  execFileSync('launchctl', ['bootstrap', `gui/${process.getuid()}`, plistPath()]);
+  return { plistPath: plistPath(), logDir, port: config.port };
+}
+
+function printLaunchdInfo({ plistPath: plist, logDir, port }) {
+  out(
+    `자동 실행을 등록했습니다: ${plist}`,
+    `로그: ${logDir}`,
+    `화면: http://127.0.0.1:${port}`,
+    '',
+    '외장 디스크의 파일을 읽으려면 [시스템 설정 → 개인정보 보호 및 보안 → 전체 디스크 접근 권한]에',
+    `${process.execPath} 을(를) 추가해야 할 수 있습니다 (node 를 업그레이드하면 새 경로로 다시 추가).`,
+  );
+}
+
+// 질문-답 입력기. 답을 여러 줄 한꺼번에 붙여 넣어도 잃어버리지 않고, 입력이 끝나면 기본값으로 진행합니다.
+export function createAsk(input = process.stdin, output = process.stdout) {
+  const rl = createInterface({ input, output });
+  const lines = [];
+  const waiters = [];
+  let closed = false;
+  rl.on('line', (line) => {
+    const waiter = waiters.shift();
+    if (waiter) waiter(line);
+    else lines.push(line);
+  });
+  rl.on('close', () => {
+    closed = true;
+    while (waiters.length) waiters.shift()('');
+  });
+  const ask = (question, hint) => {
+    output.write(`${question}${hint ? ` [${hint}]` : ''}\n> `);
+    const answer = lines.length ? Promise.resolve(lines.shift()) : closed ? Promise.resolve('') : new Promise((resolve) => waiters.push(resolve));
+    return answer.then((line) => {
+      if (!input.isTTY) output.write('\n');
+      return String(line ?? '').trim();
+    });
+  };
+  return { ask, close: () => rl.close() };
+}
+
+async function setupCommand(configPath) {
+  const { ask, close } = createAsk();
+  try {
+    await runSetup({ configPath, ask, print: (line) => out(line) });
+
+    out('', '연결 확인 중...');
+    const app = openApp({ configPath });
+    try {
+      for (const ch of enabledChannels(app.config)) {
+        const r = await app.engine.checkChannel(ch);
+        out(`${r.ok ? '✓' : '✗'} ${pad(CHANNELS[ch]?.label ?? ch, 18)}${r.account ? `${r.account}  ` : ''}${r.message ?? ''}`);
+      }
+    } finally {
+      app.store.close();
+    }
+
+    if (process.platform !== 'darwin') {
+      out('', '실행: node bin/snspub.js start');
+      return 0;
+    }
+    const installed = existsSync(plistPath());
+    if (!installed) {
+      const answer = await ask('\n맥이 켜질 때 발행기가 자동으로 실행되게 할까요? (Y/n)', 'Y');
+      if (/^n/i.test(answer)) {
+        out('', '나중에 직접 켜려면: node bin/snspub.js start');
+        return 0;
+      }
+    } else {
+      out('', '자동 실행 중인 발행기를 새 설정으로 다시 켭니다.');
+    }
+    const info = installLaunchd(configPath);
+    printLaunchdInfo(info);
+    for (let i = 0; i < 20 && !(await ping(info.port)); i += 1) await new Promise((r) => setTimeout(r, 500));
+    const url = `http://127.0.0.1:${info.port}`;
+    openUrl(url);
+    out('', `완료! 브라우저에서 ${url} 을(를) 여세요 (자동으로 열리지 않으면 주소를 붙여 넣기).`);
+    return 0;
+  } finally {
+    close();
+  }
+}
+
 async function run(cmd, args, flags) {
   const configPath = flags.config ? resolve(String(flags.config)) : defaultConfigPath();
 
@@ -187,27 +291,16 @@ async function run(cmd, args, flags) {
     return 0;
   }
 
-  if (cmd === 'install-launchd' || cmd === 'uninstall-launchd') {
-    if (process.platform !== 'darwin') throw new Error('launchd 자동 실행은 macOS 에서만 쓸 수 있습니다');
-    const plistPath = join(homedir(), 'Library', 'LaunchAgents', `${LAUNCHD_LABEL}.plist`);
-    const domain = `gui/${process.getuid()}`;
-    try {
-      execFileSync('launchctl', ['bootout', domain, plistPath], { stdio: 'ignore' });
-    } catch {
-      // 등록돼 있지 않았으면 무시
-    }
-    if (cmd === 'uninstall-launchd') {
-      rmSync(plistPath, { force: true });
-      out('자동 실행을 해제했습니다.');
-      return 0;
-    }
-    const { config } = openApp({ configPath });
-    const logDir = join(config.dataDir, 'logs');
-    mkdirSync(logDir, { recursive: true });
-    mkdirSync(dirname(plistPath), { recursive: true });
-    writeFileSync(plistPath, launchdPlist({ node: stableNodePath(), script: join(APP_ROOT, 'bin', 'snspub.js'), configFile: config.file, logDir }));
-    execFileSync('launchctl', ['bootstrap', domain, plistPath]);
-    out(`자동 실행을 등록했습니다: ${plistPath}`, `로그: ${logDir}`, `화면: http://127.0.0.1:${config.port}`, '', '외장 디스크의 파일을 읽으려면 [시스템 설정 → 개인정보 보호 및 보안 → 전체 디스크 접근 권한]에', `${process.execPath} 을(를) 추가해야 할 수 있습니다 (node 를 업그레이드하면 새 경로로 다시 추가).`);
+  if (cmd === 'setup') return setupCommand(configPath);
+
+  if (cmd === 'install-launchd') {
+    printLaunchdInfo(installLaunchd(configPath));
+    return 0;
+  }
+
+  if (cmd === 'uninstall-launchd') {
+    uninstallLaunchd();
+    out('자동 실행을 해제했습니다.');
     return 0;
   }
 
