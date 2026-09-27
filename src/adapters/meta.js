@@ -143,13 +143,29 @@ async function igResume(job, ctx) {
   }
   // FINISHED: 이제 게시. 결과를 모르면 다음 확인에서 컨테이너 상태로 판단하므로 안전합니다.
   ctx.checkpoint({ stage: 'publishing' });
-  const pub = await ctx.request(`${base}/${t.igUserId}/media_publish`, {
-    method: 'POST',
-    body: q({ creation_id: containerId, access_token: t.pageToken }),
-    idempotent: true,
-    classify: graphClassify,
-    label: 'Instagram 게시',
-  });
+  let pub;
+  try {
+    pub = await ctx.request(`${base}/${t.igUserId}/media_publish`, {
+      method: 'POST',
+      body: q({ creation_id: containerId, access_token: t.pageToken }),
+      idempotent: true,
+      classify: graphClassify,
+      label: 'Instagram 게시',
+    });
+  } catch (err) {
+    if (['transient', 'rate_limit', 'auth'].includes(err.kind)) throw err;
+    // 오류를 돌려줘도 실제로는 게시된 사례가 있어 컨테이너 상태를 다시 봅니다
+    const again = await ctx
+      .request(`${base}/${containerId}?${q({ fields: 'status_code', access_token: t.pageToken })}`, { classify: graphClassify, label: 'Instagram 게시 재확인' })
+      .catch(() => undefined);
+    const after = again?.json?.status_code;
+    if (after === 'PUBLISHED') {
+      ctx.checkpoint({ stage: 'published' });
+      return igFindPublished(job, ctx, t);
+    }
+    if (after === 'ERROR' || after === 'EXPIRED') throw err;
+    throw uncertain(`Instagram 게시 요청이 오류를 돌려줬지만 게시됐을 수도 있습니다 (${err.message}). 채널에서 확인해 주세요`);
+  }
   if (!pub.json?.id) return { status: 'processing', pollAfterSec: 20 };
   ctx.checkpoint({ mediaId: pub.json.id, stage: 'published' });
   return igFindPublished(job, ctx, t);

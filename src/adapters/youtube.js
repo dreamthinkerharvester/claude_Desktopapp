@@ -142,7 +142,8 @@ async function pollVideo(job, ctx, token) {
     label: 'YouTube 처리 상태',
   });
   const item = res.json?.items?.[0];
-  if (!item) throw invalid('YouTube 에서 영상을 찾을 수 없습니다 (삭제되었을 수 있음)');
+  // 올린 직후에는 목록에 늦게 나타날 수 있어 기다립니다 (계속 없으면 처리 시간 초과로 "확인 필요")
+  if (!item) return { status: 'processing', pollAfterSec: 60 };
   const st = item.status ?? {};
   if (st.uploadStatus === 'rejected') throw invalid(`YouTube 가 영상을 거부했습니다: ${st.rejectionReason ?? ''}`);
   if (st.uploadStatus === 'failed') throw invalid(`YouTube 처리 실패: ${st.failureReason ?? ''}`);

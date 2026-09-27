@@ -63,7 +63,13 @@ export function parseDateTime(input, timeZone) {
     if (values.month < 1 || values.month > 12 || values.day < 1 || values.day > 31 || values.hour > 23 || values.minute > 59) {
       throw new Error(`시각 형식이 올바르지 않습니다: ${text}`);
     }
-    return zonedWallTimeToDate(values, timeZone);
+    const date = zonedWallTimeToDate(values, timeZone);
+    // 2월 30일처럼 없는 날짜가 다음 달로 넘어가지 않게 확인
+    const back = wallParts(date.getTime(), timeZone);
+    if (back.year !== values.year || back.month !== values.month || back.day !== values.day) {
+      throw new Error(`없는 날짜입니다: ${text}`);
+    }
+    return date;
   }
   if (/[zZ]|[+-]\d{2}:?\d{2}$/.test(text)) {
     const d = new Date(text);

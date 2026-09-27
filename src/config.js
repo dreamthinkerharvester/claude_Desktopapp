@@ -29,6 +29,8 @@ export const DEFAULT_CONFIG = {
     order: ['youtube', 'instagram', 'facebook', 'tiktok', 'threads', 'x', 'naver_clip', 'naver_cafe'],
     gapMinutes: [25, 40],
     minGapSameChannelMinutes: 60,
+    // {links} 문구(네이버 카페)가 앞 채널 게시를 기다리는 최대 시간(분)
+    linkWaitMinutes: 90,
   },
   retry: {
     maxAttempts: 5,

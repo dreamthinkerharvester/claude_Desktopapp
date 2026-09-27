@@ -1,16 +1,20 @@
 import { PublishError } from './errors.js';
 
 // 서버에 요청이 "닿기 전"에 실패한 경우 → 게시가 일어났을 리 없으므로 재시도해도 안전합니다.
-const CONNECT_PHASE_CODES = new Set([
+// (주소 찾기 실패, 연결 거부, 연결 시간 초과, 보안 연결(TLS) 확인 실패)
+const PRE_SEND_CODES = new Set([
   'ENOTFOUND',
   'EAI_AGAIN',
   'ECONNREFUSED',
-  'ENETUNREACH',
-  'EHOSTUNREACH',
-  'ENETDOWN',
   'UND_ERR_CONNECT_TIMEOUT',
   'CERT_HAS_EXPIRED',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'ERR_TLS_CERT_ALTNAME_INVALID',
 ]);
+// 네트워크 끊김 계열은 "연결하는 중"(syscall=connect)일 때만 보내기 전으로 봅니다. 보내는 도중이면 결과를 알 수 없음.
+const CONNECT_ONLY_CODES = new Set(['ENETUNREACH', 'EHOSTUNREACH', 'ENETDOWN']);
 
 export function redact(text) {
   return String(text ?? '')
@@ -19,8 +23,17 @@ export function redact(text) {
     .replace(/(Bearer|OAuth|Apikey)\s+[A-Za-z0-9._\-~+/=]+/g, '$1 ***');
 }
 
-function errorCode(err) {
-  return err?.cause?.code ?? err?.code ?? err?.cause?.cause?.code;
+function errorSource(err) {
+  if (err?.cause?.code) return err.cause;
+  if (err?.code) return err;
+  return err?.cause?.cause;
+}
+
+export function isPreSendFailure(err) {
+  const src = errorSource(err);
+  const code = src?.code;
+  if (!code) return false;
+  return PRE_SEND_CODES.has(code) || (CONNECT_ONLY_CODES.has(code) && src.syscall === 'connect');
 }
 
 function retryAfterSeconds(headers) {
@@ -69,9 +82,9 @@ export async function request(url, opts = {}) {
       ...(body && typeof body === 'object' && typeof body.getReader === 'function' ? { duplex: 'half' } : {}),
     });
   } catch (err) {
-    const code = errorCode(err);
+    const code = errorSource(err)?.code;
     const where = label ? `${label}: ` : '';
-    if (code && CONNECT_PHASE_CODES.has(code)) {
+    if (isPreSendFailure(err)) {
       throw new PublishError('transient', `${where}네트워크 연결 실패 (${code})`, { cause: err });
     }
     const timedOut = err?.name === 'TimeoutError' || err?.name === 'AbortError';

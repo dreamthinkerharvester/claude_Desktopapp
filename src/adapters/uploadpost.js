@@ -4,6 +4,7 @@
 //
 // 요청 1건 = 채널 1개. 채널마다 예약 시각이 달라 따로 보내고, 한 채널 실패가 다른 채널에 번지지 않게 합니다.
 // Idempotency-Key 헤더: 같은 키로 24시간 안에 다시 보내면 Upload-Post 가 원래 작업을 돌려주므로 중복 게시가 되지 않습니다.
+// 24시간이 지나면 키가 효력을 잃으므로, 그 뒤에는 절대 다시 보내지 않고 "확인 필요"로 멈춥니다.
 // 참고: https://github.com/Upload-Post/upload-post-npm (API parity SDK), docs.upload-post.com
 
 import { randomUUID } from 'node:crypto';
@@ -15,8 +16,10 @@ const BASE = 'https://api.upload-post.com/api';
 const PLATFORM = { youtube: 'youtube', tiktok: 'tiktok', instagram: 'instagram', facebook: 'facebook', threads: 'threads', x: 'x' };
 const RUNNING = new Set(['pending', 'queued', 'processing', 'in_progress', 'uploading', 'started']);
 const URL_WAIT_MS = 6 * 60_000; // TikTok 은 게시 주소가 나오기까지 몇 분 걸릴 수 있음
+const KEY_WINDOW_MS = 23 * 60 * 60_000; // Idempotency-Key 유효 24시간 — 여유를 두고 23시간
 
 const bool = (v) => (v ? 'true' : 'false');
+const nowMs = (ctx) => (ctx.now ? ctx.now().getTime() : Date.now());
 
 function headers(route, extra = {}) {
   return { Authorization: `Apikey ${route.apiKey}`, ...extra };
@@ -42,12 +45,14 @@ function classify(res) {
   return undefined;
 }
 
-// 플랫폼별 실패 사유 해석 (Postiz 의 분류표 참고)
-function platformError(message) {
+// 플랫폼별 실패 사유 해석 (Postiz 의 분류표 참고). "Caption" 의 cap 같은 부분 일치를 피하려고 단어 경계를 씁니다.
+export function platformError(message) {
   const m = String(message ?? '');
-  if (/rate.?limit|too many|429|quota|daily limit|cap/i.test(m)) return rateLimited(`업로드 한도: ${m}`, { retryAfterSec: 3600 });
-  if (/token|expired|reconnect|re-?auth|unauthori[sz]ed|not connected|disconnected|permission/i.test(m)) return authError(`계정 연결을 확인해 주세요: ${m}`);
-  if (/timeout|temporar|try again|unavailable|internal/i.test(m)) return transient(m);
+  if (/rate.?limit|too many|\b429\b|quota|daily.?(?:limit|cap)|\bcap(?:ped)?\b|limit (?:reached|exceeded)/i.test(m)) {
+    return rateLimited(`업로드 한도: ${m}`, { retryAfterSec: 3600 });
+  }
+  if (/\btoken\b|expired|reconnect|re-?auth|unauthori[sz]ed|not connected|disconnected|permission/i.test(m)) return authError(`계정 연결을 확인해 주세요: ${m}`);
+  if (/timeout|temporar|try again|unavailable|internal error/i.test(m)) return transient(m);
   return invalid(m || '업로드 실패');
 }
 
@@ -78,10 +83,14 @@ function appendCommon(form, job, ctx) {
       const tt = route.tiktok ?? {};
       form.append('privacy_level', tt.privacy ?? 'PUBLIC_TO_EVERYONE');
       form.append('disable_comment', bool(tt.disableComment));
-      form.append('disable_duet', bool(tt.disableDuet));
-      form.append('disable_stitch', bool(tt.disableStitch));
-      form.append('is_aigc', bool(ai));
-      // 하루 한도에 걸리면 조용히 '초안'으로 바뀌는 대신 오류로 알려 달라는 옵션
+      if (job.post.kind === 'video') {
+        form.append('disable_duet', bool(tt.disableDuet));
+        form.append('disable_stitch', bool(tt.disableStitch));
+        form.append('is_aigc', bool(ai));
+      } else {
+        form.append('tiktok_is_ai_generated', bool(ai));
+      }
+      // 하루 한도에 걸리면 '초안'으로 바뀌는 대신 오류로 알려 달라는 옵션 (무시되더라도 아래에서 초안 전환을 감지합니다)
       form.append('disable_inbox_fallback', 'true');
       break;
     }
@@ -101,7 +110,11 @@ function appendCommon(form, job, ctx) {
 async function send(job, ctx) {
   const { route } = ctx;
   requireConfig(route);
-  const remote = ctx.checkpoint({ idemKey: job.remote.idemKey ?? randomUUID(), phase: 'uploading', sentAt: job.remote.sentAt ?? new Date().toISOString() });
+  const remote = ctx.checkpoint({
+    idemKey: job.remote.idemKey ?? randomUUID(),
+    phase: 'uploading',
+    sentAt: job.remote.sentAt ?? new Date(nowMs(ctx)).toISOString(),
+  });
   const form = new FormData();
   appendCommon(form, job, ctx);
   const files = job.post.files;
@@ -121,7 +134,7 @@ async function send(job, ctx) {
     headers: headers(route, { 'Idempotency-Key': remote.idemKey }),
     body: form,
     timeoutMs: 20 * 60_000,
-    idempotent: true, // Idempotency-Key 덕분에 같은 요청을 다시 보내도 한 번만 게시됩니다
+    idempotent: true, // Idempotency-Key 덕분에 24시간 안에는 같은 요청을 다시 보내도 한 번만 게시됩니다
     classify,
     label: 'Upload-Post 업로드',
   });
@@ -129,10 +142,14 @@ async function send(job, ctx) {
   if (json.success === false) throw platformError(errorText(json, res.text));
   if (json.request_id) {
     ctx.checkpoint({ requestId: json.request_id, phase: 'sent' });
-    return { status: 'processing', pollAfterSec: 15 };
+    const done = json.results ? await fromResults(job, ctx, json.results, json.request_id) : undefined;
+    return done ?? { status: 'processing', pollAfterSec: 15 };
   }
-  if (json.results) return fromResults(job, ctx, json.results, undefined);
-  throw uncertain(`Upload-Post 응답을 해석할 수 없습니다: ${res.text.slice(0, 200)}`);
+  if (json.results) {
+    const done = await fromResults(job, ctx, json.results, undefined);
+    if (done) return done;
+  }
+  throw uncertain(`Upload-Post 응답을 해석할 수 없습니다 — 채널에서 게시 여부를 확인해 주세요: ${res.text.slice(0, 200)}`);
 }
 
 function entryFor(results, platform) {
@@ -141,15 +158,11 @@ function entryFor(results, platform) {
   return results[platform];
 }
 
-async function findInHistory(ctx, { platform, requestId, since }) {
-  const res = await ctx.request(`${BASE}/uploadposts/history?page=1&limit=30`, { headers: headers(ctx.route), classify, label: 'Upload-Post 기록 조회' });
+// 게시 기록에서 request_id 로만 찾습니다 (시간만 보고 남의 업로드를 가져오지 않도록)
+async function findInHistory(ctx, { platform, requestId }) {
+  const res = await ctx.request(`${BASE}/uploadposts/history?page=1&limit=50`, { headers: headers(ctx.route), classify, label: 'Upload-Post 기록 조회' });
   const items = res.json?.history ?? res.json?.items ?? res.json?.data ?? (Array.isArray(res.json) ? res.json : []);
-  return items.find((it) => {
-    if (String(it.platform ?? '').toLowerCase() !== platform) return false;
-    if (requestId) return it.request_id === requestId;
-    const at = Date.parse(it.upload_timestamp ?? it.created_at ?? '');
-    return Number.isFinite(at) && at >= Date.parse(since) - 60_000;
-  });
+  return items.find((it) => String(it.platform ?? '').toLowerCase() === platform && it.request_id === requestId);
 }
 
 async function fromResults(job, ctx, results, requestId) {
@@ -160,14 +173,19 @@ async function fromResults(job, ctx, results, requestId) {
   if (entry.success !== true) return undefined;
   let url = entry.url ?? entry.post_url;
   let id = entry.platform_post_id ?? entry.post_id ?? entry.publish_id;
+  // TikTok 하루 한도로 '초안함'으로 들어간 경우: 공개 게시가 아니므로 알려 줌
+  if (entry.fallback_to_inbox === true || /^v_inbox/.test(String(id ?? ''))) {
+    return { status: 'needs_check', message: 'TikTok 하루 게시 한도에 걸려 TikTok 앱의 초안함으로 들어갔습니다. 앱에서 마무리한 뒤 [게시됨으로 표시]를 눌러 주세요' };
+  }
+  const successAt = job.remote.successAt ?? ctx.checkpoint({ successAt: new Date(nowMs(ctx)).toISOString() }).successAt;
   if (!url && requestId) {
+    // 주소 찾기는 부가 기능이라 실패해도 게시 결과를 바꾸지 않습니다
     const hist = await findInHistory(ctx, { platform, requestId }).catch(() => undefined);
     url = hist?.post_url;
     id = id ?? hist?.platform_post_id;
   }
   if (url) return { status: 'published', url, id };
-  const seen = job.remote.successAt ?? ctx.checkpoint({ successAt: new Date().toISOString() }).successAt;
-  if (Date.now() - Date.parse(seen) < URL_WAIT_MS) return { status: 'processing', pollAfterSec: 60 };
+  if (requestId && nowMs(ctx) - Date.parse(successAt) < URL_WAIT_MS) return { status: 'processing', pollAfterSec: 60 };
   return { status: 'published', id, warning: '게시는 됐지만 주소를 아직 받지 못했습니다 (채널에서 확인)' };
 }
 
@@ -175,19 +193,22 @@ async function poll(job, ctx) {
   const { requestId } = job.remote;
   const res = await ctx.request(`${BASE}/uploadposts/status?request_id=${encodeURIComponent(requestId)}`, {
     headers: headers(ctx.route),
+    accept: [404],
     classify,
     label: 'Upload-Post 상태 조회',
   });
   const json = res.json ?? {};
   const status = String(json.status ?? '').toLowerCase();
+  if (res.status === 404 || status === 'not_found') {
+    return { status: 'needs_check', message: 'Upload-Post 에서 이 작업을 찾을 수 없습니다. 채널에서 게시 여부를 확인해 주세요' };
+  }
   const done = await fromResults(job, ctx, json.results, requestId);
   if (done) return done;
   if (!status || RUNNING.has(status)) return { status: 'processing', pollAfterSec: 20 };
   if (status === 'failed' || status === 'error' || status === 'retryable') throw platformError(errorText(json) || `Upload-Post 작업 실패 (${status})`);
-  if (status === 'not_found') throw uncertain('Upload-Post 에서 이 작업을 찾을 수 없습니다. 채널에서 게시 여부를 확인해 주세요');
   if (status === 'completed') {
-    // 결과 목록에 이 채널이 없을 때: 기록에서 찾아봄
-    const hist = await findInHistory(ctx, { platform: PLATFORM[job.channel], requestId }).catch(() => undefined);
+    // 결과 목록에 이 채널이 없을 때: 기록에서 찾아봄 (조회 실패는 일시 오류로 보고 나중에 다시 확인)
+    const hist = await findInHistory(ctx, { platform: PLATFORM[job.channel], requestId });
     if (hist?.success) return { status: 'published', url: hist.post_url, id: hist.platform_post_id };
     if (hist && hist.success === false) throw platformError(hist.error_message);
     return { status: 'needs_check', message: 'Upload-Post 는 완료라고 하지만 이 채널 결과가 없습니다. 채널에서 확인해 주세요' };
@@ -225,7 +246,7 @@ export default {
     } catch (err) {
       if (err.kind !== 'invalid') throw err;
       // 프로필 목록을 못 읽으면 기록 조회로 API 키만 확인합니다
-      await ctx.request(`${BASE}/uploadposts/history?page=1&limit=1`, { headers: headers(ctx.route), classify, label: 'Upload-Post 연결 확인' });
+      await ctx.request(`${BASE}/uploadposts/history?page=1&limit=20`, { headers: headers(ctx.route), classify, label: 'Upload-Post 연결 확인' });
       return { ok: true, account: `Upload-Post 프로필 ${ctx.route.user}`, message: 'API 키 정상 (채널별 계정 연결은 Upload-Post 화면에서 확인해 주세요)' };
     }
     const profiles = res.json?.profiles ?? res.json?.users ?? [];
@@ -249,17 +270,20 @@ export default {
   },
   async resume(job, ctx) {
     if (job.remote.requestId) return poll(job, ctx);
-    // 업로드 응답을 못 받은 경우: 기록에서 먼저 찾아보고, 없으면 같은 Idempotency-Key 로 다시 보냅니다(중복 안 됨)
+    // 게시 성공은 확인했지만 추적 번호가 없는 경우: 다시 보내지 않고 완료로 둠
+    if (job.remote.successAt) return { status: 'published', warning: '게시는 됐지만 주소를 받지 못했습니다 (채널에서 확인)' };
     requireConfig(ctx.route);
-    const hist = await findInHistory(ctx, { platform: PLATFORM[job.channel], since: job.remote.sentAt }).catch(() => undefined);
-    if (hist?.request_id) {
-      ctx.checkpoint({ requestId: hist.request_id, phase: 'sent' });
-      if (hist.success && hist.post_url) return { status: 'published', url: hist.post_url, id: hist.platform_post_id };
-      return { status: 'processing', pollAfterSec: 10 };
+    // 업로드 응답을 못 받은 경우: 24시간 안이면 같은 Idempotency-Key 로 다시 보냄 → Upload-Post 가 원래 작업을 돌려줌(중복 없음)
+    const sentAt = Date.parse(job.remote.sentAt ?? '');
+    if (!Number.isFinite(sentAt) || nowMs(ctx) - sentAt > KEY_WINDOW_MS) {
+      return {
+        status: 'needs_check',
+        message: 'Upload-Post 응답을 받지 못한 채 중복 방지 키의 유효 시간(24시간)이 지나 자동으로 다시 보내지 않습니다. 채널에서 게시 여부를 확인해 주세요',
+      };
     }
     return send(job, ctx);
   },
   canResume(job) {
-    return !!(job.remote?.requestId || job.remote?.idemKey);
+    return !!(job.remote?.requestId || job.remote?.idemKey || job.remote?.successAt);
   },
 };

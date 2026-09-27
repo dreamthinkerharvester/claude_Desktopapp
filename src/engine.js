@@ -18,6 +18,8 @@ import { notify as macNotify } from './system.js';
 import { addMinutes, addSeconds, formatLocal, parseDateTime } from './util/time.js';
 
 const label = (channel) => CHANNELS[channel]?.label ?? channel;
+// 처리 중(processing)도 취소할 수 있게 둡니다: 플랫폼 쪽이 멈췄을 때 빠져나갈 길이 있어야 하므로
+const CANCELABLE = ['pending', 'failed', 'needs_check', 'manual', 'processing'];
 
 export class Engine {
   constructor({ config, store, adapters, now = () => new Date(), notifier, fetchImpl = globalThis.fetch, maxConcurrent = 3 }) {
@@ -142,7 +144,7 @@ export class Engine {
         if (this.active.size >= this.maxConcurrent) break;
         if (this.active.has(job.channel)) continue;
         if (this.store.getChannelState(job.channel).blocked) continue;
-        if (mode === 'publish' && this.deferForGap(job, now)) continue;
+        if (mode === 'publish' && (this.deferForGap(job, now) || this.deferForLinks(job, now))) continue;
         const run = mode === 'publish' ? this.runJob(job) : this.resumeJob(job);
         const promise = run
           .catch((err) => this.event(job, 'error', `실행기 오류: ${err?.message ?? err}`))
@@ -166,6 +168,21 @@ export class Engine {
     if (earliest <= now) return false;
     this.store.transition(job.id, ['pending'], { nextTryAt: earliest.toISOString() });
     this.event(job, 'info', `${label(job.channel)}: 같은 채널 최소 간격(${gap}분)을 지키려고 ${formatLocal(earliest, this.config.timezone)}로 미룹니다`);
+    return true;
+  }
+
+  // {links} 가 들어간 문구(예: 네이버 카페)는 앞 채널이 끝날 때까지 잠시 기다렸다 올립니다 (최대 linkWaitMinutes)
+  deferForLinks(job, now) {
+    if (!String(job.options?.caption ?? '').includes('{links}')) return false;
+    const waitMin = this.config.schedule?.linkWaitMinutes ?? 90;
+    if (now.getTime() - Date.parse(job.runAt) > waitMin * 60_000) return false;
+    const waiting = this.store
+      .getJobs(job.postId)
+      .filter((j) => j.id !== job.id && j.runAt <= job.runAt && ['pending', 'running', 'processing'].includes(j.status));
+    if (!waiting.length) return false;
+    const first = !job.nextTryAt;
+    this.store.transition(job.id, ['pending'], { nextTryAt: addMinutes(now, 2).toISOString() });
+    if (first) this.event(job, 'info', `${label(job.channel)}: 앞 채널(${waiting.map((j) => label(j.channel)).join(', ')})이 끝나면 링크를 넣어 올립니다`);
     return true;
   }
 
@@ -308,7 +325,12 @@ export class Engine {
       return;
     }
     try {
-      const result = archivePost(post, this.config, this.now());
+      // 같은 원본을 쓰는 다른 발행이 아직 진행 중이면 옮기지 않음 (그 발행이 끝날 때 옮김)
+      const paths = new Set(post.media.map((f) => f.path));
+      const sharing = this.store.listPosts({ limit: 500, includeDone: false }).filter((p) => p.id !== postId && p.media.some((f) => paths.has(f.path)));
+      const result = sharing.length
+        ? { moved: false, note: `같은 원본을 쓰는 다른 발행(${sharing.map((p) => p.id).join(', ')})이 남아 있어 보관 폴더로 옮기지 않았습니다` }
+        : archivePost(post, this.config, this.now());
       if (result.moved) {
         this.store.updatePost(postId, { media: result.media, archivedPath: result.archivedPath });
         this.store.addEvent('info', `원본을 보관 폴더로 옮겼습니다: ${result.archivedPath}`, { postId });
@@ -359,7 +381,7 @@ export class Engine {
 
   markDone(jobId, url) {
     const job = this.mustGetJob(jobId);
-    const ok = this.store.transition(jobId, ['manual', 'needs_check', 'failed', 'pending'], {
+    const ok = this.store.transition(jobId, ['manual', 'needs_check', 'failed', 'pending', 'processing'], {
       status: 'published',
       resultUrl: url || job.resultUrl || null,
       publishedAt: this.nowIso(),
@@ -375,7 +397,7 @@ export class Engine {
 
   cancel(jobId) {
     const job = this.mustGetJob(jobId);
-    const ok = this.store.transition(jobId, ['pending', 'failed', 'needs_check', 'manual'], { status: 'canceled', nextTryAt: null });
+    const ok = this.store.transition(jobId, CANCELABLE, { status: 'canceled', nextTryAt: null });
     if (!ok) throw new Error(`지금 상태(${job.status})에서는 취소할 수 없습니다 (올리는 중이면 끝날 때까지 기다려 주세요)`);
     this.event(job, 'info', `${label(job.channel)}: 취소`);
     this.finishPostIfDone(job.postId);
@@ -388,7 +410,7 @@ export class Engine {
     const skipped = [];
     for (const job of jobs) {
       if (['published', 'canceled'].includes(job.status)) continue;
-      if (!this.store.transition(job.id, ['pending', 'failed', 'needs_check', 'manual'], { status: 'canceled', nextTryAt: null })) {
+      if (!this.store.transition(job.id, CANCELABLE, { status: 'canceled', nextTryAt: null })) {
         skipped.push(job);
       } else {
         this.event(job, 'info', `${label(job.channel)}: 취소`);

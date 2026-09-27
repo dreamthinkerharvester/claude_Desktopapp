@@ -162,6 +162,8 @@ function jobActions(job) {
       return b('done', '게시됨으로 표시') + (job.canRecheck ? b('recheck', '상태 다시 확인') : '') + b('retry', '다시 올리기') + b('cancel', '취소', 'danger');
     case 'failed':
       return b('retry', '다시 올리기') + b('done', '게시됨으로 표시') + b('cancel', '취소', 'danger');
+    case 'processing':
+      return b('done', '게시됨으로 표시') + b('cancel', '취소', 'danger');
     case 'published':
       return job.resultUrl ? `<a class="btn small" href="${esc(job.resultUrl)}" target="_blank" rel="noopener">열기</a>` : '';
     default:
@@ -578,10 +580,15 @@ document.addEventListener('click', async (e) => {
         await post(jobPath('recheck'));
         toast('플랫폼 상태를 다시 확인합니다');
         break;
-      case 'cancel':
-        if (!confirm('이 채널 예약을 취소할까요?')) return;
+      case 'cancel': {
+        const message =
+          job?.status === 'processing'
+            ? '플랫폼에서 처리 중인 작업입니다. 취소하면 이 프로그램은 더 확인하지 않지만, 게시는 이미 진행 중일 수 있습니다. 취소할까요?'
+            : '이 채널 예약을 취소할까요?';
+        if (!confirm(message)) return;
         await post(jobPath('cancel'));
         break;
+      }
       case 'cancel-post':
         if (!confirm('이 콘텐츠의 남은 예약을 모두 취소할까요? (이미 올라간 채널은 그대로 둡니다)')) return;
         await post(`/api/posts/${encodeURIComponent(btn.dataset.post)}/cancel`);
