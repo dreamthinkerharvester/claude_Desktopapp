@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SNS 발행기</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">SNS 발행기 <span class="muted small">나만 쓰는 예약 발행</span></div>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="board" role="tab">발행 현황</button>
+      <button class="tab" data-tab="compose" role="tab">새 발행</button>
+      <button class="tab" data-tab="channels" role="tab">채널</button>
+      <button class="tab" data-tab="log" role="tab">기록</button>
+    </nav>
+    <div class="clock muted small" id="clock"></div>
+  </header>
+
+  <div id="attention" class="attention" hidden></div>
+
+  <main>
+    <section id="tab-board" class="panel"></section>
+
+    <section id="tab-compose" class="panel" hidden>
+      <div class="compose-grid">
+        <div class="card">
+          <h3>1. 올릴 콘텐츠</h3>
+          <p class="muted small" id="inbox-path"></p>
+          <div id="inbox" class="inbox"></div>
+          <details class="manual-path">
+            <summary class="small">수신함 밖의 파일 경로 직접 입력</summary>
+            <div class="row">
+              <input id="manual-path" type="text" placeholder="/Volumes/MacData/.../영상.mp4 또는 카드뉴스 폴더">
+              <button class="btn" id="use-path">사용</button>
+            </div>
+          </details>
+          <div id="selected" class="selected muted small">선택한 콘텐츠가 없습니다</div>
+        </div>
+
+        <div class="card">
+          <h3>2. 기본 문구</h3>
+          <label>제목 <span class="muted small">(유튜브 제목·카페 글 제목, 비우면 파일 이름)</span>
+            <input id="f-title" type="text" maxlength="200">
+          </label>
+          <label>소개글
+            <textarea id="f-caption" rows="6" placeholder="채널 공통 소개글. 채널별로 아래에서 따로 고칠 수 있습니다."></textarea>
+          </label>
+          <label>해시태그 <span class="muted small">(띄어쓰기로 구분, 채널별 권장 개수만 자동으로 붙음)</span>
+            <input id="f-tags" type="text" placeholder="#전세금 #임차권등기명령">
+          </label>
+        </div>
+
+        <div class="card">
+          <h3>3. 채널과 시간</h3>
+          <div id="f-channels" class="channel-checks"></div>
+          <div class="schedule">
+            <label class="inline"><input type="radio" name="start" value="now" checked> 지금부터</label>
+            <label class="inline"><input type="radio" name="start" value="at"> 시작 시각
+              <input id="f-at" type="datetime-local">
+            </label>
+            <label class="inline">채널 사이 간격
+              <input id="f-gap-min" type="number" min="0" max="600" class="num"> ~
+              <input id="f-gap-max" type="number" min="0" max="600" class="num"> 분
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="row between">
+          <h3>4. 채널별 확인 <span class="muted small">(시각·문구를 채널마다 고칠 수 있습니다)</span></h3>
+          <button class="btn" id="reroll">시각 다시 계산</button>
+        </div>
+        <div id="preview" class="preview muted">콘텐츠를 고르면 채널별 미리보기가 나옵니다.</div>
+        <div class="row end">
+          <button class="btn primary" id="submit" disabled>발행 등록</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-channels" class="panel" hidden></section>
+    <section id="tab-log" class="panel" hidden></section>
+  </main>
+
+  <dialog id="modal">
+    <form method="dialog" id="modal-form">
+      <h3 id="modal-title"></h3>
+      <div id="modal-body"></div>
+      <div class="row end">
+        <button class="btn" value="cancel">닫기</button>
+        <button class="btn primary" id="modal-ok" value="ok">저장</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="/app.js" type="module"></script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+# 비밀키가 들어가는 설정 파일과 작업 기록은 올리지 않습니다
+config.jsonc
+data/
+*.db
+*.db-wal
+*.db-shm
+*.lock
+
+node_modules/
+.DS_Store

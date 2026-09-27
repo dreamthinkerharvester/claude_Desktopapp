@@ -1,0 +1,18 @@
+{
+  "name": "sns-publisher",
+  "version": "0.1.0",
+  "private": true,
+  "description": "나만 쓰는 최소 기능 SNS 예약 발행기 (Buffer 축소판, 공식 게시 통로 전용)",
+  "type": "module",
+  "bin": {
+    "snspub": "bin/snspub.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning bin/snspub.js start",
+    "test": "node --disable-warning=ExperimentalWarning --test \"test/**/*.test.js\""
+  },
+  "license": "UNLICENSED"
+}
