@@ -169,7 +169,12 @@ async function fromResults(job, ctx, results, requestId) {
   const platform = PLATFORM[job.channel];
   const entry = entryFor(results, platform);
   if (!entry) return undefined;
-  if (entry.success === false) throw platformError(entry.error ?? entry.message ?? entry.error_message);
+  if (entry.success === false) {
+    const err = entry.error ?? entry.message ?? entry.error_message;
+    // 처리 중인 채널도 success:false 로 오므로, 오류 정보가 없으면 아직 끝나지 않은 것으로 봅니다
+    if (!err && !entry.error_code && !entry.failure_stage) return undefined;
+    throw platformError(err);
+  }
   if (entry.success !== true) return undefined;
   let url = entry.url ?? entry.post_url;
   let id = entry.platform_post_id ?? entry.post_id ?? entry.publish_id;

@@ -171,6 +171,29 @@ test('플랫폼이 실패를 알리면 실패로 두고 이유를 보여 준다'
   }
 });
 
+test('처리 중에 오는 success:false(오류 정보 없음)는 실패로 보지 않는다', async () => {
+  const env = setup(['facebook']);
+  const fetch = mockFetch([
+    { method: 'POST', match: `${BASE}/upload`, reply: { json: { success: true, request_id: 'r6' } } },
+    { once: true, match: 'status?request_id=r6', reply: { json: { status: 'in_progress', results: [{ platform: 'facebook', success: false, error_message: null }] } } },
+    { match: 'status?request_id=r6', reply: { json: { status: 'completed', results: [{ platform: 'facebook', success: true, post_url: 'https://facebook.com/p/1' }] } } },
+  ]);
+  const engine = env.engine({ uploadpost }, { fetchImpl: fetch });
+  try {
+    const plan = await add(env, {});
+    const job = () => env.store.getJob(`${plan.post.id}.facebook`);
+    await tickAll(engine);
+    env.clock.advance(1);
+    await tickAll(engine);
+    assert.notEqual(job().status, 'failed');
+    env.clock.advance(1);
+    await tickAll(engine);
+    assert.equal(job().status, 'published');
+  } finally {
+    env.cleanup();
+  }
+});
+
 test('연결 확인: 프로필과 채널 계정 연결 여부', async () => {
   const env = setup(['instagram', 'tiktok', 'x', 'threads']);
   const fetch = mockFetch([
